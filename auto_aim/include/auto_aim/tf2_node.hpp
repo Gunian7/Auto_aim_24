@@ -29,8 +29,14 @@ private:
         const tf2::Vector3& v
     );
 
-    // 下位机欧拉角订阅
+    // 下位机欧拉角订阅（mock 模式下不创建）
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr euler_sub_;
+
+    // mock 模式：定时器发布固定位姿 TF
+    rclcpp::TimerBase::SharedPtr mock_timer_;
+    bool mock_hardware_ { false };
+    double mock_yaw_ { 0.0 };
+    double mock_pitch_ { 0.0 };
 
     // 广播器
     std::unique_ptr<tf2_ros::TransformBroadcaster> broadcaster_odom2shooter_;

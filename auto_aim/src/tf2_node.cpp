@@ -20,55 +20,68 @@ TF2Node::TF2Node(const rclcpp::NodeOptions& options):
     this->camera_coordinate = declare_parameter("camera_coordinate", "camera");
     this->odom_coordinate = declare_parameter("odom_coordinate", "odom");
 
+    mock_hardware_ = declare_parameter("mock_hardware", false);
+    mock_yaw_ = declare_parameter("mock_yaw", 0.0);
+    mock_pitch_ = declare_parameter("mock_pitch", 0.0);
+
     broadcaster_shooter2camera_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
     broadcaster_odom2shooter_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
     tfs_shooter2camera_ = std::make_unique<geometry_msgs::msg::TransformStamped>();
     tfs_odom2shooter_ = std::make_unique<geometry_msgs::msg::TransformStamped>();
 
-    euler_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-        "/communicate/gyro/left",
-        rclcpp::SensorDataQoS(),
-        [this](const sensor_msgs::msg::JointState::SharedPtr msg) {
-            auto& timestamp = msg->header.stamp;
-            auto& yaw = msg->position[0];
-            auto& pitch = msg->position[1];
+    auto publish_tf = [this](double yaw, double pitch, const rclcpp::Time& stamp) {
+        SendTransform(
+            broadcaster_odom2shooter_,
+            tfs_odom2shooter_,
+            stamp,
+            odom_coordinate,
+            shooter_coordinate,
+            [pitch, yaw]() {
+                tf2::Quaternion q;
+                q.setRPY(0, pitch, yaw);
+                return q;
+            }(),
+            tf2::Vector3(
+                odom2shooter_r_ * cos(pitch) * cos(yaw),
+                odom2shooter_r_ * cos(pitch) * sin(yaw),
+                odom2shooter_r_ * sin(-pitch)
+            )
+        );
+        SendTransform(
+            broadcaster_shooter2camera_,
+            tfs_shooter2camera_,
+            stamp,
+            shooter_coordinate,
+            camera_coordinate,
+            []() {
+                tf2::Quaternion q;
+                q.setEuler(M_PI_2, 0, -M_PI_2);
+                return q;
+            }(),
+            tf2::Vector3(shooter2camera_tvec_[0], shooter2camera_tvec_[1], shooter2camera_tvec_[2])
+        );
+    };
 
-            // foxglove x:red y:green z:blue
-            // 发布 odom 到 枪口 的坐标系转换（补偿 yaw pitch 轴的云台转动）
-            // 四元数字和欧拉角转换 https://quaternions.online
-            SendTransform(
-                broadcaster_odom2shooter_,
-                tfs_odom2shooter_,
-                timestamp,
-                odom_coordinate,
-                shooter_coordinate,
-                [pitch, yaw]() {
-                    tf2::Quaternion q;
-                    q.setRPY(0, pitch, yaw);
-                    return q;
-                }(),
-                tf2::Vector3(
-                    odom2shooter_r_ * cos(pitch) * cos(yaw),
-                    odom2shooter_r_ * cos(pitch) * sin(yaw),
-                    odom2shooter_r_ * sin(-pitch)
-                )
-            );
-            // 发布 枪口 到 相机 的坐标系转换
-            SendTransform(
-                broadcaster_shooter2camera_,
-                tfs_shooter2camera_,
-                timestamp,
-                shooter_coordinate,
-                camera_coordinate,
-                []() {
-                    tf2::Quaternion q;
-                    q.setEuler(M_PI_2, 0, -M_PI_2);
-                    return q;
-                }(),
-                tf2::Vector3(shooter2camera_tvec_[0], shooter2camera_tvec_[1], shooter2camera_tvec_[2])
-            );
-        }
-    );
+    if (mock_hardware_) {
+        RCLCPP_INFO(this->get_logger(),
+            "tf2_node running in MOCK mode (yaw=%.2f, pitch=%.2f) — no hardware required",
+            mock_yaw_, mock_pitch_);
+        mock_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(20),  // 50 Hz
+            [this, publish_tf]() {
+                publish_tf(mock_yaw_, mock_pitch_, this->now());
+            }
+        );
+    } else {
+        RCLCPP_INFO(this->get_logger(), "tf2_node running in REAL mode — waiting for gyro data");
+        euler_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+            "/communicate/gyro/left",
+            rclcpp::SensorDataQoS(),
+            [this, publish_tf](const sensor_msgs::msg::JointState::SharedPtr msg) {
+                publish_tf(msg->position[0], msg->position[1], msg->header.stamp);
+            }
+        );
+    }
 }
 
 void TF2Node::SendTransform(
@@ -98,6 +111,4 @@ void TF2Node::SendTransform(
 #include "rclcpp_components/register_node_macro.hpp"
 
 // Register the component with class_loader.
-// This acts as a sort of entry point, allowing the component to be discoverable
-// when its library is being loaded into a running process.
 RCLCPP_COMPONENTS_REGISTER_NODE(auto_aim::TF2Node)

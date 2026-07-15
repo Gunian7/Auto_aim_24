@@ -29,6 +29,10 @@
         shooter_coordinate: "shooter"
         camera_coordinate: "camera"
         odom_coordinate: "odom"
+        # 设为 true 则不需要下位机，用固定 yaw/pitch 发布 TF
+        mock_hardware: true
+        mock_yaw: 0.0
+        mock_pitch: 0.0
 
 /armor_detector_node:
     ros__parameters:

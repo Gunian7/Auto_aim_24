@@ -1,7 +1,13 @@
 #ifndef MINDVISION_HPP
 #define MINDVISION_HPP
 
+#if __has_include(<mindvision/CameraApi.h>)
 #include <mindvision/CameraApi.h>
+#elif __has_include(<CameraApi.h>)
+#include <CameraApi.h>
+#else
+#error "MindVision CameraApi.h not found"
+#endif
 
 #include "opencv2/core/core.hpp"
 

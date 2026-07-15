@@ -15,6 +15,7 @@
 
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
+  <depend>ament_index_cpp</depend>
   <depend>vision_opencv</depend>
   <depend>cv_bridge</depend>
   <depend>sensor_msgs</depend>

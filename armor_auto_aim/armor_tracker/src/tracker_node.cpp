@@ -150,7 +150,9 @@ void ArmorTrackerNode::ArmorsCallback(const auto_aim_interfaces::msg::Armors::Sh
                 { state(0), state(2), state(4), state(6) },
                 { state(1), state(3), state(5), state(7) },
                 { state(8), tracker_->another_r },
-                tracker_->dz
+                tracker_->dz,
+                tracker_->OutpostHeightOffsets(),
+                tracker_->CurrentOutpostPhaseId()
             };
 
             // 获取当前时刻 odom to shooter 的转换
@@ -372,7 +374,14 @@ void ArmorTrackerNode::PublishMarkers(const auto_aim_interfaces::msg::Target& ta
                 is_current_pair = !is_current_pair;
             } else {
                 r = r1;
-                p_a.z = armor_z;
+                if (car_state.id == "outpost") {
+                    const int height_id =
+                        (car_state.current_outpost_phase_id + static_cast<int>(i))
+                        % OutpostHeightModel::kArmorCount;
+                    p_a.z = armor_z + car_state.armor_height_offsets[height_id];
+                } else {
+                    p_a.z = armor_z;
+                }
             }
             p_a.x = robot_center_x - r * cos(tmp_yaw);
             p_a.y = yc - r * sin(tmp_yaw);

@@ -70,12 +70,20 @@ void Tracker::Update(const Armors::SharedPtr& armors_msg) {
 
                 // 具有相同 id 的装甲板的位置
                 auto p = armor.pose.position;
+                const double armor_yaw = OrientationToYaw(armor.pose.orientation);
+                double predicted_height = predicted_position.z();
+                if (tracked_id == "outpost" && outpost_height_model_.Ready()) {
+                    predicted_height = outpost_height_model_.ArmorHeight(
+                        predicted_height, outpost_height_model_.PhaseId(armor_yaw));
+                }
                 Eigen::Vector3d position_vec(p.x, p.y, p.z);
-                double position_diff = (predicted_position - position_vec).norm();
+                Eigen::Vector3d candidate_prediction = predicted_position;
+                candidate_prediction.z() = predicted_height;
+                double position_diff = (candidate_prediction - position_vec).norm();
                 // 找到最近的装甲
                 if (position_diff < min_position_diff) {
                     min_position_diff = position_diff;
-                    yaw_diff = abs(OrientationToYaw(armor.pose.orientation) - ekf_prediction(6));
+                    yaw_diff = abs(armor_yaw - ekf_prediction(6));
                     tracked_armor = armor;
                 }
             }
@@ -90,9 +98,18 @@ void Tracker::Update(const Armors::SharedPtr& armors_msg) {
             // 找到匹配的装甲
             matched = true;
             auto p = tracked_armor.pose.position;
-            // 更新 EKF
+            // 更新 EKF。前哨站的 z 状态表示三层装甲板的中层基准高度。
             double measured_yaw = OrientationToYaw(tracked_armor.pose.orientation);
-            measurement = Eigen::Vector4d(p.x, p.y, p.z, measured_yaw);
+            double measured_height = p.z;
+            if (tracked_id == "outpost") {
+                current_outpost_phase_id_ =
+                    outpost_height_model_.Observe(measured_yaw, measured_height);
+                if (outpost_height_model_.Ready()) {
+                    measured_height = outpost_height_model_.NormalizeHeight(
+                        measured_height, current_outpost_phase_id_);
+                }
+            }
+            measurement = Eigen::Vector4d(p.x, p.y, measured_height, measured_yaw);
             target_state = ekf.Update(measurement);
             RCLCPP_DEBUG(rclcpp::get_logger("armor_tracker"), "EKF update");
         } else if (same_id_armors_count == 1 && yaw_diff > max_match_yaw_diff_) {
@@ -146,9 +163,13 @@ void Tracker::InitEKF(const Armor& a) {
     last_yaw_ = 0;
     double yaw = OrientationToYaw(a.pose.orientation);
 
-    // 将初始位置设置为目标后方 0.2 米处
     target_state = Eigen::VectorXd::Zero(9);
-    double r = 0.26;
+    const bool is_outpost = a.number == "outpost";
+    double r = is_outpost ? 0.2765 : 0.26;
+    if (is_outpost) {
+        outpost_height_model_.Reset(yaw);
+        current_outpost_phase_id_ = outpost_height_model_.Observe(yaw, za);
+    }
     double xc = xa + r * cos(yaw);
     double yc = ya + r * sin(yaw);
     dz = 0, another_r = r;
@@ -173,17 +194,26 @@ void Tracker::HandleArmorJump(const Armor& current_armor) {
     double yaw = OrientationToYaw(current_armor.pose.orientation);
     target_state(6) = yaw;
     UpdateArmorsNum(current_armor);
-    // 只有 4 个装甲具有 2 个半径和高度
-    if (tracked_armors_num == ArmorsNum::NORMAL_4) {
-        dz = target_state(4) - current_armor.pose.position.z;
-        target_state(4) = current_armor.pose.position.z;
+
+    auto p = current_armor.pose.position;
+    double measured_height = p.z;
+    if (tracked_armors_num == ArmorsNum::OUTPOST_3) {
+        current_outpost_phase_id_ = outpost_height_model_.Observe(yaw, measured_height);
+        if (outpost_height_model_.Ready()) {
+            measured_height = outpost_height_model_.NormalizeHeight(
+                measured_height, current_outpost_phase_id_);
+        }
+        target_state(4) = measured_height;
+    } else if (tracked_armors_num == ArmorsNum::NORMAL_4) {
+        // 只有 4 个装甲具有 2 个半径和高度
+        dz = target_state(4) - measured_height;
+        target_state(4) = measured_height;
         std::swap(target_state(8), another_r);
     }
     RCLCPP_WARN(rclcpp::get_logger("armor_tracker"), "Armor jump!");
 
     // 如果位置差异大于 max_match_distance_，将此情况视为 EKF 发散，重置状态
-    auto p = current_armor.pose.position;
-    Eigen::Vector3d current_p(p.x, p.y, p.z);
+    Eigen::Vector3d current_p(p.x, p.y, measured_height);
     Eigen::Vector3d infer_p = GetArmorPositionFromState(target_state);
     if ((current_p - infer_p).norm() > max_match_distance_) {
         double r = target_state(8);
@@ -191,7 +221,7 @@ void Tracker::HandleArmorJump(const Armor& current_armor) {
         target_state(1) = 0;                  // vxc
         target_state(2) = p.y + r * sin(yaw); // yc
         target_state(3) = 0;                  // vyc
-        target_state(4) = p.z;                // za
+        target_state(4) = measured_height;    // center height
         target_state(5) = 0;                  // vza
         RCLCPP_ERROR(rclcpp::get_logger("armor_tracker"), "Reset State!");
     }
@@ -238,10 +268,19 @@ Eigen::Vector3d Tracker::ChooseArmor(const CarState& car_state, const float& sho
     auto armor_number = predict_car_state.armors_num;
     for (int i = 0; i < armor_number; i++) {
         double yaw = predict_car_state.position.w() + i * (2 * M_PI / armor_number);
+        int height_id = i;
+        if (predict_car_state.id == "outpost") {
+            height_id = (predict_car_state.current_outpost_phase_id + i)
+                % OutpostHeightModel::kArmorCount;
+        }
+        const double armor_height = predict_car_state.id == "outpost"
+            ? predict_car_state.position.z()
+                + predict_car_state.armor_height_offsets[height_id]
+            : predict_car_state.position.z() + i % 2 * dz;
         armors_position.emplace_back(
             predict_car_state.position.x() - predict_car_state.r[i % 2] * cos(yaw),
             predict_car_state.position.y() - predict_car_state.r[i % 2] * sin(yaw),
-            predict_car_state.position.z() + i % 2 * dz,
+            armor_height,
             yaw,
             pow(predict_car_state.position.x() - average_armor_radius * cos(yaw), 2) + pow(predict_car_state.position.y() - average_armor_radius * sin(yaw), 2)
         );
@@ -263,5 +302,14 @@ Eigen::Vector3d Tracker::ChooseArmor(const CarState& car_state, const float& sho
 
     return { best_armor.x, best_armor.y, best_armor.z };
 };
+
+const std::array<double, OutpostHeightModel::kArmorCount>&
+Tracker::OutpostHeightOffsets() const {
+    return outpost_height_model_.HeightOffsets();
+}
+
+int Tracker::CurrentOutpostPhaseId() const {
+    return current_outpost_phase_id_;
+}
 
 } // namespace armor

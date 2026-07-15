@@ -30,6 +30,15 @@ rclcpp_components_register_node(${PROJECT_NAME}
     EXECUTABLE ${PROJECT_NAME}_node
 )
 
+if(BUILD_TESTING)
+    find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(outpost_height_model_test test/outpost_height_model_test.cpp)
+    target_include_directories(outpost_height_model_test PRIVATE include)
+
+    ament_add_gtest(outpost_tracker_geometry_test test/outpost_tracker_geometry_test.cpp)
+    target_link_libraries(outpost_tracker_geometry_test ${PROJECT_NAME})
+endif()
+
 ############
 # Install ##
 ############

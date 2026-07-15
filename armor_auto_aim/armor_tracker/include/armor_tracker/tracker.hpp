@@ -10,10 +10,12 @@
 #include <geometry_msgs/msg/vector3.hpp>
 
 // STD
+#include <array>
 #include <memory>
 #include <string>
 
 #include "armor_tracker/extended_kalman_filter.hpp"
+#include "armor_tracker/outpost_height_model.hpp"
 #include "auto_aim_interfaces/msg/armors.hpp"
 #include "auto_aim_interfaces/msg/target.hpp"
 
@@ -49,6 +51,8 @@ struct CarState {
     Eigen::Vector4d velocity;
     double r[2];
     double dz;
+    std::array<double, OutpostHeightModel::kArmorCount> armor_height_offsets { 0.0, 0.0, 0.0 };
+    int current_outpost_phase_id { 0 };
 };
 
 // 装甲追踪器类
@@ -94,6 +98,9 @@ public:
 
     Eigen::Vector3d ChooseArmor(const CarState& car_state, const float& shooter_yaw, const float& bullet_speed, const float& flytime_offset);
 
+    const std::array<double, OutpostHeightModel::kArmorCount>& OutpostHeightOffsets() const;
+    int CurrentOutpostPhaseId() const;
+
     // 用于存储另一对装甲消息
     double dz, another_r;
 
@@ -121,6 +128,9 @@ private:
     int lost_count_;   // 丢失计数
 
     double last_yaw_; // 上一次的偏航角
+
+    OutpostHeightModel outpost_height_model_;
+    int current_outpost_phase_id_ { 0 };
 };
 
 } // namespace armor
